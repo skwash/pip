@@ -3,6 +3,8 @@ from __future__ import absolute_import
 import logging
 import tempfile
 import os.path
+import re
+import shutil
 
 from pip._vendor.six.moves.urllib import parse as urllib_parse
 from pip._vendor.six.moves.urllib import request as urllib_request
@@ -99,29 +101,45 @@ class Git(VersionControl):
         self.update_submodules(dest)
 
     def obtain(self, dest):
-        url, rev = self.get_url_rev()
+        url, rev, path = self.get_url_rev()
+
+        if path:
+            gitdest = dest + "/git"
+            os.mkdir(dest)
+        else:
+            gitdest = dest
+
         if rev:
             rev_options = [rev]
             rev_display = ' (to %s)' % rev
         else:
             rev_options = ['origin/master']
             rev_display = ''
-        if self.check_destination(dest, url, rev_options, rev_display):
+        if self.check_destination(gitdest, url, rev_options, rev_display):
             logger.info(
                 'Cloning %s%s to %s', url, rev_display, display_path(dest),
             )
-            self.run_command(['clone', '-q', url, dest])
+            self.run_command(['clone', '-q', url, gitdest])
 
             if rev:
-                rev_options = self.check_rev_options(rev, dest, rev_options)
+                rev_options = self.check_rev_options(rev, gitdest, rev_options)
                 # Only do a checkout if rev_options differs from HEAD
-                if not self.get_revision(dest).startswith(rev_options[0]):
+                if not self.get_revision(gitdest).startswith(rev_options[0]):
                     self.run_command(
                         ['checkout', '-q'] + rev_options,
-                        cwd=dest,
+                        cwd=gitdest,
                     )
             #: repo may contain submodules
-            self.update_submodules(dest)
+            self.update_submodules(gitdest)
+
+        # create a directory called piptemp
+        # Move the contents of the pypath to piptemp
+        # Remove everything else
+        # Move piptemp/* to dest
+        piptemp = dest + "/piptemp"
+        shutil.copytree(gitdest + "/." + path, piptemp)
+        for name in os.listdir(piptemp):
+            shutil.move(piptemp + "/" + name, dest)
 
     def get_url(self, location):
         url = self.run_command(
@@ -187,6 +205,7 @@ class Git(VersionControl):
         That's required because although they use SSH they sometimes doesn't
         work with a ssh:// scheme (e.g. Github). But we need a scheme for
         parsing. Hence we remove it again afterwards and return it as a stub.
+        git+https://github.com/TMRh20/RF24Network.git/RPi/pyRF24Network@master
         """
         if '://' not in self.url:
             assert 'file:' not in self.url
@@ -196,7 +215,12 @@ class Git(VersionControl):
         else:
             url, rev = super(Git, self).get_url_rev()
 
-        return url, rev
+        m = re.search("(.+\.git)(.*)", url)
+
+        url = m.group(1)
+        path = m.group(2)
+
+        return url, rev, path
 
     def update_submodules(self, location):
         if not os.path.exists(os.path.join(location, '.gitmodules')):
